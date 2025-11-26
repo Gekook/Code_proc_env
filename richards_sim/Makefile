@@ -1,5 +1,4 @@
-# Makefile per il progetto `richards_sim`
-# Compila `richards.cpp` in eseguibile `richards` con supporto Eigen.
+# Makefile for the project `richards_sim`
 
 CXX ?= g++
 CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -I/usr/include/eigen3
