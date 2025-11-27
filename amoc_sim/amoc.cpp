@@ -5,9 +5,9 @@
 
 /**
  * @file amoc.cpp
- * @brief Simple 1D AMOC toy model producing hysteresis data for Stilde vs F
+ * @brief Simple 1D AMOC toy model producing hysteresis data for S_tilde vs F
  *
- * This file integrates a reduced ODE for the state variable Stilde (S2 - S1)
+ * This file integrates a reduced ODE for the state variable S_tilde (S2 - S1)
  * while sweeping the forcing parameter F. It writes upward and downward
  * sweep data files and creates a small gnuplot script to visualize results.
  */
@@ -17,11 +17,9 @@
  *  these unless you are experimenting deliberately.
  */
 /*@{*/
-const double dt = 1e-5;        /**< time step for Euler integration */
-const int N = 40;            /**< number of sweep steps */
-const int M_steps_time = 100;  /**< temporal integration steps per F value */
+
 const double ro = 10;          /**< model parameter ro */
-const double tau = 10e-3;      /**< timescale tau */
+const double tau = 1e-3;      /**< timescale tau */
 const double mus = 1.5;        /**< parameter mu_s */
 const double mut = 1.0;        /**< parameter mu_t */
 /*@}*/
@@ -30,24 +28,31 @@ const double mut = 1.0;        /**< parameter mu_t */
  *  Small set of parameters intended for user experimentation.
  */
 /*@{*/
-const double deltaT = 0;       /**< perturbation parameter (try non-zero values) */
-const double Fmin = -0.0015;    /**< minimum forcing for sweep */
-const double Fmax = 0.0015;     /**< maximum forcing for sweep */
-/*@}*/
 
-/** @brief Model right-hand side: computes dStilde/dt */
-double f(double Stilde, double Stildestar, double ro, double tau, double mus, double mut, double deltaT) {
-    return (1.0 / tau) * (Stildestar - Stilde) + 2.0 * Stilde * ro * ro * pow((mus * Stilde - mut * deltaT), 2.0);
+
+const double dt = 1e-5;
+const int    N = 200;
+const int    M_steps_time = 10000;
+const double deltaT = 3;      
+const double S_tilde_star_initial = 0;
+const double S_tilde_star_final   = 0.6;
+const double tol   = 1e-6;
+const double delta = 1e-10;
+
+
+/** @brief Model right-hand side: computes dS_tilde/dt */
+double f(double S_tilde, double S_tilde_star, double ro, double tau, double mus, double mut, double deltaT) {
+    return (1.0 / tau) * (S_tilde_star - S_tilde) + 2.0 * S_tilde * ro * ro * pow((mus * S_tilde - mut * deltaT), 2.0);
 }
 
 /**
- * @brief Time integrator for Stilde with fixed forcing F
+ * @brief Time integrator for S_tilde with fixed forcing F
  *
- * Advances Stilde starting from Stilde0 using a forward-Euler scheme for
+ * Advances S_tilde starting from S_tilde0 using a forward-Euler scheme for
  * M_steps iterations while keeping forcing F fixed. The function returns the
- * final Stilde or the last valid value if the computation produces NaN/Inf.
+ * final S_tilde or the last valid value if the computation produces NaN/Inf.
  *
- * @param Stilde0 Initial Stilde value
+ * @param S_tilde0 Initial S_tilde value
  * @param F Fixed forcing value during integration
  * @param ro Model parameter ro
  * @param tau Timescale parameter
@@ -55,24 +60,32 @@ double f(double Stilde, double Stildestar, double ro, double tau, double mus, do
  * @param mut Parameter mu_t
  * @param deltaT Perturbation parameter
  * @param M_steps Number of Euler steps to perform
- * @return Integrated Stilde after M_steps (or earlier on numerical error)
+ * @return Integrated S_tilde after M_steps (or earlier on numerical error)
  */
-double integrate_Stilde(double Stilde0, double F, double ro, double tau, double mus, double mut, double deltaT, int M_steps) {
-    double Stilde = Stilde0;
-    for (int k = 0; k < M_steps; ++k) {
-        double dStdt = f(Stilde, F, ro, tau, mus, mut, deltaT);
-        if (std::isnan(dStdt) || std::isinf(dStdt)) break;
-        Stilde += dt * dStdt;
-        if (std::isnan(Stilde) || std::isinf(Stilde)) break;
-    }
-    return Stilde;
+double integrate_S_tilde(double S_tilde0, double S_tilde_star)
+{
+    double S_tilde = S_tilde0;
+    double S_tilde_old;
+    int k = 0;
+    double dStdt;
+
+    do {
+        S_tilde_old = S_tilde;
+        dStdt = f(S_tilde, S_tilde_star, ro, tau, mus, mut, deltaT);
+        S_tilde += dt * dStdt;
+        ++k;
+    } while (k < M_steps_time && std::abs(S_tilde -S_tilde_old) / std::max(std::abs(S_tilde_old), delta) > tol);
+
+    //std::cout<<k<<std::endl;
+
+    return S_tilde;
 }
 
 /**
- * @brief Sweep the forcing parameter and record Stilde for each F
+ * @brief Sweep the forcing parameter and record S_tilde for each F
  *
  * For each linearly spaced forcing value between Fstart and Fend this
- * function integrates Stilde for M_steps_time and writes the pair (F, Stilde)
+ * function integrates S_tilde for M_steps_time and writes the pair (F, S_tilde)
  * to the provided output stream.
  *
  * @param Fstart Starting forcing value
@@ -84,34 +97,34 @@ double integrate_Stilde(double Stilde0, double F, double ro, double tau, double 
  * @param deltaT Perturbation parameter (passed through)
  * @param N_steps_sweep Number of forcing steps in the sweep
  * @param M_steps_time Number of temporal integration steps per forcing
- * @param outfile Output stream to receive lines "F Stilde"
+ * @param outfile Output stream to receive lines "F S_tilde"
  */
-void sweep_smooth(double Fstart, double Fend, double ro, double tau, double mus, double mut, double deltaT,
-                  int N_steps_sweep, int M_steps_time, std::ofstream &outfile) {
-    double Stilde = 0.0; /**< initial Stilde value */
-    double F = Fstart;
-    double Fstep = (Fend - Fstart) / N_steps_sweep;
+void sweep_smooth(double S_tilde_star_initial, double S_tilde_star_final, std::ofstream &outfile) {
+    double S_tilde = 0.0; /**< initial S_tilde value */
+    double S_tilde_star = S_tilde_star_initial;
+    double S_step = (S_tilde_star_final - S_tilde_star_initial) / N;
 
-    for (int n = 0; n < N_steps_sweep; ++n) {
-        Stilde = integrate_Stilde(Stilde, F, ro, tau, mus, mut, deltaT, M_steps_time);
-        outfile << F << " " << Stilde << "\n";
-        F += Fstep;
+    for (int n = 0; n < N; ++n) {
+        S_tilde = integrate_S_tilde(S_tilde, S_tilde_star);
+        outfile << S_tilde_star << " " << S_tilde << "\n";
+        S_tilde_star += S_step;
     }
 }
 
 int main() {
+
     std::ofstream data_up("amoc1var_up.dat");
-    sweep_smooth(Fmin, Fmax, ro, tau, mus, mut, deltaT, N, M_steps_time, data_up);
+    sweep_smooth(S_tilde_star_initial,S_tilde_star_final, data_up);
     data_up.close();
 
     std::ofstream data_down("amoc1var_down.dat");
-    sweep_smooth(Fmax, Fmin, ro, tau, mus, mut, deltaT, N, M_steps_time, data_down);
+    sweep_smooth(S_tilde_star_final,S_tilde_star_initial,data_down);
     data_down.close();
 
     std::ofstream gp("amoc1var.gnuplot");
-    gp << "set title 'AMOC Hysteresis: Stilde vs Forcing F'\n";
+    gp << "set title 'AMOC Hysteresis: S_tilde vs Forcing F'\n";
     gp << "set xlabel 'Forcing F (Initial Salinity Difference)'\n";
-    gp << "set ylabel 'Stilde (= S2 - S1)'\n";
+    gp << "set ylabel 'S_tilde (= S2 - S1)'\n";
     gp << "set grid\n";
     gp << "plot \\\n";
     gp << "  'amoc1var_up.dat' with lines lw 2 lc rgb 'blue' title 'Sweep Up', \\\n";
