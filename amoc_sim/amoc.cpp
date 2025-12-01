@@ -30,19 +30,19 @@ const double mut = 1.0;        /**< parameter mu_t */
 /*@{*/
 
 
-const double dt = 1e-5;
+const double dt = 1e-4;
 const int    N = 200;
-const int    M_steps_time = 10000;
-const double deltaT = 3;      
-const double S_tilde_star_initial = 0;
-const double S_tilde_star_final   = 0.6;
+const int    M_steps_time = 1000;
+const double deltaT = 5.5;     
+const double S_tilde_star_initial = 2.5;
+const double S_tilde_star_final   = 5.5;
 const double tol   = 1e-6;
 const double delta = 1e-10;
 
 
 /** @brief Model right-hand side: computes dS_tilde/dt */
 double f(double S_tilde, double S_tilde_star, double ro, double tau, double mus, double mut, double deltaT) {
-    return (1.0 / tau) * (S_tilde_star - S_tilde) + 2.0 * S_tilde * ro * ro * pow((mus * S_tilde - mut * deltaT), 2.0);
+    return (1.0 / tau) * (S_tilde_star - S_tilde) - 2.0 * S_tilde * ro * ro * pow((mus * S_tilde - mut * deltaT), 2.0);
 }
 
 /**
@@ -74,9 +74,11 @@ double integrate_S_tilde(double S_tilde0, double S_tilde_star)
         dStdt = f(S_tilde, S_tilde_star, ro, tau, mus, mut, deltaT);
         S_tilde += dt * dStdt;
         ++k;
-    } while (k < M_steps_time && std::abs(S_tilde -S_tilde_old) / std::max(std::abs(S_tilde_old), delta) > tol);
+    } while (k < M_steps_time && std::abs(S_tilde -S_tilde_old) / std::max(std::abs(S_tilde_old), delta) > tol
+);
 
-    //std::cout<<k<<std::endl;
+    std::cout<<k<<std::endl;
+    //&& std::abs(S_tilde -S_tilde_old) / std::max(std::abs(S_tilde_old), delta) > tol
 
     return S_tilde;
 }
