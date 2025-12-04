@@ -4,8 +4,8 @@ CXX ?= g++
 CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -I/usr/include/eigen3
 LDFLAGS ?=
 
-TARGET := richards
-SRCS := richards.cpp
+TARGET := richards2D
+SRCS := richards2D.cpp
 OBJS := $(SRCS:.cpp=.o)
 
 .PHONY: all run debug clean
@@ -17,10 +17,13 @@ $(TARGET): $(SRCS)
 
 run: all
 	./$(TARGET)
+	gnuplot plot.gnu 
+	eog snapshot_*.png &
+
 
 debug: CXXFLAGS += -g -O0
 debug: clean all
 
 clean:
-	rm -f $(TARGET) $(OBJS) *.csv
+	rm -f $(TARGET) $(OBJS) *.csv *.png
 
