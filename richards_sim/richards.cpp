@@ -1,227 +1,270 @@
-/**************************************************************************
- * @file richards_python_constants_with_neumann_bc.cpp
- * @brief 1D Richards-equation toy solver using Eigen for linear algebra,
- *        with constants aligned to the provided Python code and Neumann BC
- *        at the bottom (dpsi/dz = 0, psi_{Nz-1} = psi_{Nz-2}).
- *************************************************************************/
-
-#include <iostream>
-#include <vector>
+// richards_clone_python_with_csv.cpp
+#include <Eigen/Sparse>
+#include <Eigen/SparseLU>
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
-#include <Eigen/Dense>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <vector>
 
-// -------------------------------
-// Constants aligned to Python
-// -------------------------------
-static constexpr double C_const = 1.0;     // C = 1.0
-static constexpr int    m_const = 2;       // m = 2
-static constexpr double g_const = 9.81;    // g = 9.81
+int main() {
+    // ----------------------------
+    // Paramètres physiques / numériques (IDENTIQUES au Python)
+    // ----------------------------
+    const double C = 1.0;
+    const double m = 2.0;
+    const double K0 = 3e-3;
+    const double g = -10.0;
 
-static constexpr double L = 1.0;          // domain length
-static constexpr int    Nz = 201;         // Nz = 201
-static constexpr double dt = 5.0;         // dt = 5.0
-static constexpr double t_final = 1000.0; // t_final = 1000.0
+    const double L = 0.1;
+    const int Nz = 301;
+    const double dz = L / (Nz - 1);
 
-static constexpr double dz = L / (Nz - 1); // dz = L/(Nz-1)
-static constexpr int Nt = (int)std::ceil(t_final / dt); // Nt = ceil(t_final/dt) = 200
+    const double dt = 5e-3;
+    const double t_final = 2.8;
+    const int nt = (int)std::ceil(t_final / dt);
 
-static constexpr double theta_sat = 0.35; // Theta_max in Python
-static constexpr double K_const = 2e-4;   // K0 in Python
+    const double q_in = 1e-3; // not used because TOP flux branch is commented in Python
 
-// Python IC parameters
-static constexpr double theta_init_top = 0.05;
-static constexpr double theta_init_bottom = 0.30;
+    const double tol_newton = 1e-4;
+    const int max_newton = 20;
 
-// Python top BC parameters
-static constexpr double theta_top_imposed = 1.05; // (as in Python, even if > theta_sat)
-static constexpr double psi_top = C_const * theta_top_imposed * theta_top_imposed; // C*theta^m
+    const double Theta_max = 0.35;
 
-// -------------------------------
-// Constitutive relations (same shape as Python)
-// theta(psi) = min( (max(psi,0)/C)^(1/m), theta_sat )
-// dtheta/dpsi = 0 if psi<=0 or saturated
-// -------------------------------
-double theta(double psi)
-{
-    if (psi <= 0.0) return 0.0;
+    // ----------------------------
+    // OUTPUT SETTINGS (NEW)
+    // ----------------------------
+    const int output_every = 10;                 // dump every N steps (like you want)
+    const std::string out_prefix = "richards_";  // produces richards_00010.csv, ...
 
-    double th = std::pow(psi / C_const, 1.0 / m_const);
-    return (th >= theta_sat) ? theta_sat : th;
-}
-
-double dtheta_dpsi(double psi)
-{
-    if (psi <= 0.0) return 0.0;
-
-    double th = std::pow(psi / C_const, 1.0 / m_const);
-    if (th >= theta_sat) return 0.0; // clipped region
-
-    // d/dpsi [(psi/C)^(1/m)] = (1/m) * (1/C)^(1/m) * psi^(1/m - 1)
-    // With C=1, this reduces to (1/m)*psi^(1/m-1), but keep general form:
-    double dth = (1.0 / m_const) * std::pow(1.0 / C_const, 1.0 / m_const)
-                 * std::pow(psi, 1.0 / m_const - 1.0);
-    return dth;
-}
-
-int main()
-{
-    std::cout << std::setprecision(10);
-
-    std::cout << "Aligned constants (Python):\n";
-    std::cout << "  L=" << L << " Nz=" << Nz << " dz=" << dz << "\n";
-    std::cout << "  dt=" << dt << " t_final=" << t_final << " Nt=" << Nt << "\n";
-    std::cout << "  C=" << C_const << " m=" << m_const << " g=" << g_const << "\n";
-    std::cout << "  K=" << K_const << " theta_sat=" << theta_sat << "\n";
-    std::cout << "  theta_top_imposed=" << theta_top_imposed << " -> psi_top=" << psi_top << "\n\n";
-
-    // -------------------------------
-    // Initial condition aligned to Python:
-    // theta0(z) linear from theta_init_top (z=0) to theta_init_bottom (z=L)
-    // psi0 = C * theta^m (unsat inversion)
-    // -------------------------------
-    std::vector<double> psi(Nz, 0.0);
-    for (int k = 0; k < Nz; ++k) {
-        double zfrac = (double)k / (double)(Nz - 1);
-        double th0 = theta_init_top * (1.0 - zfrac) + theta_init_bottom * zfrac;
-
-        // invert unsat law: psi = C * theta^m
-        double psi0 = C_const * std::pow(th0, (double)m_const);
-
-        // if th0 >= theta_sat, clamp psi to saturation threshold (same idea as Python)
-        if (th0 >= theta_sat) {
-            psi0 = C_const * std::pow(theta_sat, (double)m_const);
+    auto write_csv_snapshot = [&](int step, double t, const Eigen::VectorXd& psi,
+                                  const Eigen::VectorXd& theta) {
+        std::ostringstream name;
+        name << out_prefix << std::setw(5) << std::setfill('0') << step << ".csv";
+        std::ofstream f(name.str());
+        if (!f) {
+            std::cerr << "Cannot open output file: " << name.str() << "\n";
+            return;
         }
 
-        psi[k] = psi0;
+        // ParaView-friendly: header + columns
+        // You can use "Table To Points": X=z, Y=0, Z=0, and scalar=psi/theta
+        f << "t,z,psi,theta\n";
+        f << std::setprecision(17);
+
+        for (int i = 0; i < Nz; ++i) {
+            const double z = i * dz;
+            f << t << "," << z << "," << psi[i] << "," << theta[i] << "\n";
+        }
+    };
+
+    // ----------------------------
+    // Lois constitutives (IDENTIQUES)
+    // ----------------------------
+    auto theta_of_psi = [&](const Eigen::VectorXd& psi) {
+        Eigen::VectorXd out(Nz);
+        for (int i = 0; i < Nz; ++i) {
+            const double psi_pos = std::max(psi[i], 0.0);
+            const double theta_unsat = std::pow(psi_pos / C, 1.0 / m);
+            out[i] = theta_unsat; // EXACT like Python (no min with Theta_max here)
+        }
+        return out;
+    };
+
+    auto dtheta_dpsi = [&](const Eigen::VectorXd& psi) {
+        Eigen::VectorXd deriv(Nz);
+        for (int i = 0; i < Nz; ++i) {
+            const double psi_pos = std::max(psi[i], 1e-16);
+            const double theta_unsat = std::pow(psi_pos / C, 1.0 / m);
+
+            double d = (1.0 / m) * std::pow(1.0 / C, 1.0 / m) * std::pow(psi_pos, 1.0 / m - 1.0);
+
+            if (theta_unsat >= Theta_max) d = 0.0;
+            if (psi[i] < 0.0) d = 0.0;
+
+            deriv[i] = d;
+        }
+        return deriv;
+    };
+
+    // ----------------------------
+    // Condition initiale (IDENTIQUE)
+    // ----------------------------
+    const double theta_init_top = 0.2;
+    const double theta_init_bottom = 0.0;
+
+    Eigen::VectorXd theta0 = Eigen::VectorXd::Zero(Nz);
+    theta0[0] = theta_init_top;
+    for (int k = 1; k < Nz; ++k) {
+        double zfrac = (double)k / (Nz - 1);
+        (void)zfrac;
+        theta0[k] = 0.0; // EXACT Python line: theta0[k] = 0 # ...
     }
 
-    // K profile constant (aligned to Python)
-    std::vector<double> k_profile(Nz, K_const);
+    Eigen::VectorXd psi0(Nz);
+    for (int i = 0; i < Nz; ++i) psi0[i] = C * std::pow(theta0[i], m);
+    for (int i = 0; i < Nz; ++i) {
+        if (theta0[i] >= Theta_max) psi0[i] = C * std::pow(Theta_max, m);
+    }
 
-    const int    max_newton_iter = 30;
-    const double tol = 1e-8;
+    // ----------------------------
+    // Conditions aux limites (IDENTIQUES)
+    // ----------------------------
+    const double theta_top_imposed = 0.2;
+    const double psi_top = C * std::pow(theta_top_imposed, m);
 
-    // -------------------------------
-    // Time stepping
-    // -------------------------------
-    for (int n = 0; n < Nt; ++n) {
+    // ----------------------------
+    // Conductivité (IDENTIQUE)
+    // ----------------------------
+    Eigen::VectorXd K_nodes = Eigen::VectorXd::Constant(Nz, K0);
 
-        Eigen::VectorXd psi_new = Eigen::VectorXd::Map(psi.data(), Nz);
+    auto K_face = [&](const Eigen::VectorXd& K_nodes_in) {
+        Eigen::VectorXd Kf(Nz - 1);
+        for (int k = 0; k < Nz - 1; ++k) {
+            Kf[k] = std::sqrt(K_nodes_in[k] * K_nodes_in[k + 1]);
+        }
+        return Kf;
+    };
 
-        // Newton iterations
-        for (int iter = 0; iter < max_newton_iter; ++iter) {
+    // ----------------------------
+    // build_S_and_J (IDENTIQUE AU PYTHON)
+    // ----------------------------
+    auto build_S_and_J = [&](const Eigen::VectorXd& psi_nplus1,
+                            const Eigen::VectorXd& psi_n,
+                            Eigen::VectorXd& S_out,
+                            Eigen::SparseMatrix<double>& J_out) {
+        Eigen::VectorXd Kf = K_face(K_nodes);
 
-            Eigen::VectorXd S = Eigen::VectorXd::Zero(Nz);
-            Eigen::MatrixXd J = Eigen::MatrixXd::Zero(Nz, Nz);
+        Eigen::VectorXd theta_n = theta_of_psi(psi_n);
 
-            // ---------------------------
-            // TOP boundary: Dirichlet psi = psi_top
-            // ---------------------------
-            S(0)   = psi_new(0) - psi_top;
-            J(0,0) = 1.0;
-
-            // ---------------------------
-            // BOTTOM boundary (Neumann: dpsi/dz = 0, psi_{Nz-1} = psi_{Nz-2})
-            // ---------------------------
-            {
-                int i_b  = Nz - 1;
-                int i_in = Nz - 2;
-
-                // Neumann BC (no gradient at bottom)
-                S(i_b)      = psi_new(i_b) - psi_new(i_in);
-                J(i_b,i_b)  = 1.0;
-                J(i_b,i_in) = -1.0;
-            }
-
-            // ---------------------------
-            // Interior nodes: 1 .. Nz-2
-            // ---------------------------
-            for (int i = 1; i < Nz - 1; ++i) {
-
-                double th_i   = theta(psi_new(i));
-                double th_ip1 = theta(psi_new(i + 1));
-                double th_im1 = theta(psi_new(i - 1));
-
-                double dth_i   = dtheta_dpsi(psi_new(i));
-                double dth_ip1 = dtheta_dpsi(psi_new(i + 1));
-                double dth_im1 = dtheta_dpsi(psi_new(i - 1));
-
-                double K_iphalf     = std::sqrt(k_profile[i] * k_profile[i + 1]);
-                double K_iminushalf = std::sqrt(k_profile[i] * k_profile[i - 1]);
-
-                double theta_iphalf     = 0.5 * (th_i + th_ip1);
-                double theta_iminushalf = 0.5 * (th_i + th_im1);
-
-                double dpsi_p = (psi_new(i + 1) - psi_new(i)) / dz;
-                double dpsi_m = (psi_new(i)     - psi_new(i - 1)) / dz;
-
-                double F_iphalf     = theta_iphalf     * K_iphalf     * (dpsi_p + g_const);
-                double F_iminushalf = theta_iminushalf * K_iminushalf * (dpsi_m + g_const);
-
-                // residual: theta(psi^{n+1}) - theta(psi^n) - (dt/dz)(F_{i+1/2}-F_{i-1/2}) = 0
-                S(i) = th_i - theta(psi[i]) - (dt / dz) * (F_iphalf - F_iminushalf);
-
-                // Jacobian terms
-                double dF_iminushalf_dpsi_im1 =
-                      0.5 * dth_im1 * K_iminushalf * (dpsi_m + g_const)
-                    - theta_iminushalf * K_iminushalf / dz;
-
-                double dF_iphalf_dpsi_ip1 =
-                      0.5 * dth_ip1 * K_iphalf * (dpsi_p + g_const)
-                    + theta_iphalf * K_iphalf / dz;
-
-                double dF_iphalf_dpsi_i =
-                      0.5 * dth_i * K_iphalf * (dpsi_p + g_const)
-                    - theta_iphalf * K_iphalf / dz;
-
-                double dF_iminushalf_dpsi_i =
-                      0.5 * dth_i * K_iminushalf * (dpsi_m + g_const)
-                    + theta_iminushalf * K_iminushalf / dz;
-
-                J(i, i - 1) = (dt / dz) * dF_iminushalf_dpsi_im1;
-                J(i, i + 1) = - (dt / dz) * dF_iphalf_dpsi_ip1;
-
-                J(i, i) = dth_i - (dt / dz) * (dF_iphalf_dpsi_i - dF_iminushalf_dpsi_i);
-            }
-
-            // Solve linear system
-            Eigen::VectorXd delta_psi = J.colPivHouseholderQr().solve(S);
-            double max_corr = delta_psi.cwiseAbs().maxCoeff();
-
-            psi_new -= delta_psi;
-
-            if (max_corr < tol) break;
+        Eigen::VectorXd theta_half = Eigen::VectorXd::Zero(Nz - 1);
+        for (int k = 0; k < Nz - 1; ++k) {
+            theta_half[k] = 0.5 * (theta_n[k + 1] + theta_n[k]);
         }
 
-        // Update psi
-        for (int i = 0; i < Nz; ++i) psi[i] = psi_new(i);
+        Eigen::VectorXd diag = Eigen::VectorXd::Zero(Nz);
+        Eigen::VectorXd off_lo = Eigen::VectorXd::Zero(Nz - 1);
+        Eigen::VectorXd off_hi = Eigen::VectorXd::Zero(Nz - 1);
 
-        // Output (every 10 steps is enough now, since Nt=200)
-        if (n % 10 == 0) {
-            double theta_max_now = 0.0;
-            double theta_min_now = 1e100;
-            for (int i = 0; i < Nz; ++i) {
-                double th = theta(psi[i]);
-                theta_max_now = std::max(theta_max_now, th);
-                theta_min_now = std::min(theta_min_now, th);
+        Eigen::VectorXd dtheta_nplus1 = dtheta_dpsi(psi_nplus1);
+        Eigen::VectorXd theta_nplus1 = theta_of_psi(psi_nplus1);
+
+        Eigen::VectorXd S = Eigen::VectorXd::Zero(Nz);
+
+        // Intérieur: k=1..Nz-2
+        for (int k = 1; k < Nz - 1; ++k) {
+            const double Kkp = Kf[k];
+            const double Kkm = Kf[k - 1];
+            const double thp = theta_half[k];
+            const double thm = theta_half[k - 1];
+
+            const double F =
+                (Kkp * thp * (psi_nplus1[k + 1] - psi_nplus1[k]) / dz
+               - Kkm * thm * (psi_nplus1[k]     - psi_nplus1[k - 1]) / dz);
+
+            const double grav = g * Kkp * (theta_n[k] - theta_n[k - 1]);
+
+            S[k] = theta_nplus1[k] - theta_n[k] - (dt / dz) * (F + grav);
+
+            diag[k] = dtheta_nplus1[k] + (dt / dz) * (Kkp * thp + Kkm * thm) / dz;
+            off_hi[k] = -(dt / dz) * Kkp * thp / dz;
+            off_lo[k - 1] = -(dt / dz) * Kkm * thm / dz;
+        }
+
+        // Top: Dirichlet (active branch)
+        S[0] = psi_nplus1[0] - psi_top;
+        diag[0] = 1.0;
+        off_hi[0] = 0.0;
+
+        // Bottom: "Neumann flux nul" implemented like Python residual
+        {
+            int k = Nz - 1;
+            const double Kkm = Kf[Nz - 2];
+            const double thm = theta_half[Nz - 2];
+
+            const double F = -Kkm * thm * (psi_nplus1[k] - psi_nplus1[k - 1]) / dz;
+
+            S[k] = theta_nplus1[k] - theta_n[k] - (dt / dz) * F;
+
+            diag[k] = dtheta_nplus1[k] + (dt / dz) * Kkm * thm / dz;
+            off_lo[k - 1] = -(dt / dz) * Kkm * thm / dz;
+        }
+
+        // Build sparse tri-diagonal J
+        std::vector<Eigen::Triplet<double>> trip;
+        trip.reserve(3 * Nz);
+
+        for (int i = 0; i < Nz; ++i) {
+            trip.emplace_back(i, i, diag[i]);
+            if (i < Nz - 1) trip.emplace_back(i, i + 1, off_hi[i]);
+            if (i > 0)      trip.emplace_back(i, i - 1, off_lo[i - 1]);
+        }
+
+        J_out.resize(Nz, Nz);
+        J_out.setFromTriplets(trip.begin(), trip.end());
+
+        S_out = S;
+    };
+
+    // ----------------------------
+    // Boucle en temps (IDENTIQUE)
+    // ----------------------------
+    Eigen::VectorXd psi_n = psi0;
+
+    // Dump initial snapshot
+    {
+        Eigen::VectorXd theta_now = theta_of_psi(psi_n);
+        write_csv_snapshot(0, 0.0, psi_n, theta_now);
+    }
+
+    std::cout << std::setprecision(10);
+    for (int n = 0; n < nt; ++n) {
+        const double t = (n + 1) * dt;
+        Eigen::VectorXd psi_np1 = psi_n;
+
+        for (int it = 0; it < max_newton; ++it) {
+            Eigen::VectorXd S(Nz);
+            Eigen::SparseMatrix<double> J;
+
+            build_S_and_J(psi_np1, psi_n, S, J);
+
+            Eigen::SparseLU<Eigen::SparseMatrix<double>> solver;
+            solver.analyzePattern(J);
+            solver.factorize(J);
+
+            if (solver.info() != Eigen::Success) {
+                std::cerr << "SparseLU factorization failed at t=" << t << "\n";
+                break;
             }
 
-            std::cout << "t=" << (n * dt)
-                      << "  theta_min=" << theta_min_now
-                      << "  theta_max=" << theta_max_now
-                      << "  psi_min=" << *std::min_element(psi.begin(), psi.end())
-                      << "  psi_max=" << *std::max_element(psi.begin(), psi.end())
-                      << "\n";
-
-            std::ofstream csvout("snapshot_" + std::to_string(n) + ".csv");
-            csvout << "z,psi,theta\n";
-            for (int i = 0; i < Nz; ++i) {
-                double z = i * dz;
-                csvout << z << "," << psi[i] << "," << theta(psi[i]) << "\n";
+            Eigen::VectorXd dpsi = solver.solve(S);
+            if (solver.info() != Eigen::Success) {
+                std::cerr << "SparseLU solve failed at t=" << t << "\n";
+                break;
             }
-            csvout.close();
+
+            psi_np1 -= dpsi;
+
+            const double inf_norm = dpsi.cwiseAbs().maxCoeff();
+            if (inf_norm < tol_newton) break;
+        }
+
+        psi_n = psi_np1;
+
+        Eigen::VectorXd theta_now = theta_of_psi(psi_n);
+        const double theta_min = theta_now.minCoeff();
+        const double theta_max = theta_now.maxCoeff();
+
+        std::cout << "t=" << std::fixed << std::setprecision(3) << t
+                  << " s: min theta=" << std::setprecision(4) << theta_min
+                  << ", max theta=" << theta_max << "\n";
+
+        // CSV snapshot every output_every
+        if ((n + 1) % output_every == 0 || (n == nt - 1)) {
+            write_csv_snapshot(n + 1, t, psi_n, theta_now);
         }
     }
 
